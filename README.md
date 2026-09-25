@@ -44,6 +44,7 @@ docker compose down -v --remove-orphans
 ## 核心功能
 
 - 人员概况：维护人员编号、授权级别、行政控制值、法规规划限值、统计周期和乐观锁版本。
+- 临时行政限值调整：检修时由计划人员提交带生效/失效日期、调整后限值与原因的临时调整；RPO 事后批准或驳回（驳回理由必填），窗口重叠或超过法规限值会被拒绝，人员页可见状态。
 - 暴露台账：新记录先进入 `pending`；RPO 核验后才能计入期间累计。
 - 不可变更正：原值禁止覆盖；一次更正事务创建负值 reversal 和新 replacement，完整保留链路。
 - 作业计划：使用统一 mSv/mSv/h 单位维护剂量率、分钟数和具体控制措施。
@@ -64,6 +65,9 @@ docker compose down -v --remove-orphans
 ```
 
 - 期间采用半开区间 `[period_start, period_end)`，边界有表驱动测试。
+- 临时行政限值调整同样采用半开窗口 `[effective_date, expiry_date)`；只有待审或已批准且与新窗口重叠的申请会被拒绝（`limit_window_overlap`），驳回后的窗口可重新提交。
+- 预算评估按**期间结束日期**选择限值：存在已批准且覆盖当日（`effective_date <= period_end < expiry_date`）的调整时使用调整后行政限值，否则继续使用人员档案的原行政限值；待审/驳回/不覆盖当日的调整一律不采用，已有评估结果不变，证据中记录 `limit_source`、调整 ID、基线限值和采用说明。
+- 调整后行政限值在提交和批准两个时点都不能超过该人员的法规规划限值（`adjustment_exceeds_legal_limit`）；临时调整不改变人员档案，也不改变法规余量算法。
 - 仅 `quality_flag=verified` 的记录参与汇总；pending/rejected 会写入排除证据。
 - 更正链按原始值 + reversal + replacement 求和，链循环、跨人员关联和重复 `source_ref` 会被拒绝。
 - `near_legal` 默认从法规限值的 90% 开始；阈值版本默认 `ALARA-2026.1`。
@@ -120,6 +124,8 @@ docker compose down -v --remove-orphans
 | --- | --- | --- |
 | POST | `/auth/login` | 登录并签发 JWT |
 | GET/POST/PUT | `/workers[/:id]` | 人员列表、详情、创建和乐观锁更新 |
+| GET/POST | `/limit-adjustments[/:id]` | 临时行政限值调整列表、详情和计划人员提交 |
+| POST | `/limit-adjustments/:id/review` | RPO 批准或驳回临时调整（驳回理由必填） |
 | GET/POST/PUT | `/plans[/:id]` | 计划列表、详情、创建和 draft 更新 |
 | POST | `/plans/:id/archive` | 归档已复核计划 |
 | GET/POST | `/exposures[/:id]` | 暴露列表、详情和 pending 记录创建 |
@@ -131,7 +137,7 @@ docker compose down -v --remove-orphans
 | POST | `/assessments/:id/review` | RPO 记录规划接受或拒绝 |
 | GET | `/audit` | RPO/admin 查询审计 |
 
-错误统一为 `error.code`、`error.message` 和 `request_id`。常见冲突包括 `duplicate_source_ref`、`correction_chain_conflict`、`invalid_state`、`version_conflict` 和 `forbidden`。
+错误统一为 `error.code`、`error.message` 和 `request_id`。常见冲突包括 `duplicate_source_ref`、`correction_chain_conflict`、`invalid_state`、`version_conflict`、`limit_window_overlap`、`adjustment_exceeds_legal_limit`、`rejection_reason_required` 和 `forbidden`。
 
 ## 枚举位置
 
@@ -145,6 +151,16 @@ docker compose down -v --remove-orphans
 - 前端类型/store/component/page：`frontend/src/app/types/permit.ts`、`stores/plans.store.ts`、`components/common/budget-evidence-panel.component.ts`、`pages/plans.page.ts`、`pages/budgets.page.ts`、`pages/audit.page.ts`
 
 `planning_accepted` 的含义仅为“规划证据已由 RPO 记录处置”，不等于现场许可。
+
+### LimitAdjustmentStatus
+
+值：`pending | approved | rejected`。
+
+- 数据库/model：`backend/internal/model/temporary_limit_adjustment.go`
+- 后端常量：`backend/internal/constants/limit_adjustment.go`
+- 后端 DTO/repository/service/handler/router：`backend/internal/dto/temporary_limit_adjustment.go`、`repository/temporary_limit_adjustment.go`、`service/temporary_limit_adjustment.go`、`handler/temporary_limit_adjustment.go`、`router/temporary_limit_adjustment.go`
+- 评估采用点：`backend/internal/service/dose_budget_assessment.go`、`backend/internal/dosebudget/evidence.go`
+- 前端类型/API/store/component：`frontend/src/app/types/limit-adjustment.ts`、`api/limit-adjustments.api.ts`、`stores/limit-adjustments.store.ts`、`components/common/limit-adjustments-panel.component.ts`（嵌入人员页）
 
 ### DoseBand
 

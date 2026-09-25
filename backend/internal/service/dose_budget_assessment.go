@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -21,6 +22,7 @@ type DoseBudgetAssessmentService struct {
 	plans            *repository.WorkPermitPlanRepository
 	workers          *repository.WorkerProfileRepository
 	entries          *repository.ExposureEntryRepository
+	adjustments      *repository.TemporaryLimitAdjustmentRepository
 	audit            *AuditService
 	nearRatio        float64
 	thresholdVersion string
@@ -32,13 +34,14 @@ func NewDoseBudgetAssessmentService(
 	plans *repository.WorkPermitPlanRepository,
 	workers *repository.WorkerProfileRepository,
 	entries *repository.ExposureEntryRepository,
+	adjustments *repository.TemporaryLimitAdjustmentRepository,
 	audit *AuditService,
 	nearRatio float64,
 	thresholdVersion string,
 ) *DoseBudgetAssessmentService {
 	return &DoseBudgetAssessmentService{
-		db: db, assessments: assessments, plans: plans, workers: workers, entries: entries, audit: audit,
-		nearRatio: nearRatio, thresholdVersion: thresholdVersion,
+		db: db, assessments: assessments, plans: plans, workers: workers, entries: entries,
+		adjustments: adjustments, audit: audit, nearRatio: nearRatio, thresholdVersion: thresholdVersion,
 	}
 }
 
@@ -53,6 +56,7 @@ func (service *DoseBudgetAssessmentService) Assess(
 		workers := service.workers.WithDB(tx)
 		entries := service.entries.WithDB(tx)
 		assessments := service.assessments.WithDB(tx)
+		adjustments := service.adjustments.WithDB(tx)
 		plan, err := plans.FindForUpdate(request.PlanID)
 		if err != nil {
 			return MapRepositoryError("work permit plan", err)
@@ -78,7 +82,11 @@ func (service *DoseBudgetAssessmentService) Assess(
 		if err != nil {
 			return Internal("could not load period exposure entries", err)
 		}
-		assessment, err := service.calculate(plan, worker, period, periodEntries, actor.ID)
+		adjustment, found, err := service.resolveAdjustment(adjustments, worker.ID, period.End)
+		if err != nil {
+			return err
+		}
+		assessment, err := service.calculate(plan, worker, period, periodEntries, adjustment, found, actor.ID)
 		if err != nil {
 			return err
 		}
@@ -144,7 +152,11 @@ func (service *DoseBudgetAssessmentService) Compare(
 		if err != nil {
 			return dto.ScenarioComparisonResponse{}, Internal("could not load period exposure entries", err)
 		}
-		assessment, err := service.calculate(plan, worker, period, entries, 0)
+		adjustment, found, err := service.resolveAdjustment(service.adjustments, worker.ID, period.End)
+		if err != nil {
+			return dto.ScenarioComparisonResponse{}, err
+		}
+		assessment, err := service.calculate(plan, worker, period, entries, adjustment, found, 0)
 		if err != nil {
 			return dto.ScenarioComparisonResponse{}, err
 		}
@@ -342,11 +354,28 @@ func (service *DoseBudgetAssessmentService) List(
 	return responses, pageMeta(page, pageSize, total), nil
 }
 
+func (service *DoseBudgetAssessmentService) resolveAdjustment(
+	repo *repository.TemporaryLimitAdjustmentRepository,
+	workerID uint,
+	periodEnd time.Time,
+) (model.TemporaryLimitAdjustment, bool, error) {
+	adjustment, err := repo.EffectiveAt(workerID, periodEnd.UTC())
+	if err == nil {
+		return adjustment, true, nil
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return model.TemporaryLimitAdjustment{}, false, nil
+	}
+	return model.TemporaryLimitAdjustment{}, false, Internal("could not resolve temporary limit adjustment", err)
+}
+
 func (service *DoseBudgetAssessmentService) calculate(
 	plan model.WorkPermitPlan,
 	worker model.WorkerProfile,
 	period dosebudget.Period,
 	entries []model.ExposureEntry,
+	adjustment model.TemporaryLimitAdjustment,
+	adjustmentFound bool,
 	createdBy uint,
 ) (model.DoseBudgetAssessment, error) {
 	summary, err := dosebudget.SummarizeEntries(entries)
@@ -357,8 +386,16 @@ func (service *DoseBudgetAssessmentService) calculate(
 	if err != nil {
 		return model.DoseBudgetAssessment{}, BadRequest("invalid_projection", err.Error())
 	}
+	administrativeLimit := worker.AdministrativeLimitMSV
+	limitSource := dosebudget.LimitSourceBaseline
+	adjustmentID := uint(0)
+	if adjustmentFound {
+		administrativeLimit = adjustment.AdjustedLimitMSV
+		limitSource = dosebudget.LimitSourceTemporary
+		adjustmentID = adjustment.ID
+	}
 	thresholds := dosebudget.Thresholds{
-		AdministrativeLimitMSV: worker.AdministrativeLimitMSV, LegalLimitMSV: worker.AnnualLimitMSV,
+		AdministrativeLimitMSV: administrativeLimit, LegalLimitMSV: worker.AnnualLimitMSV,
 		NearLegalRatio: service.nearRatio, Version: service.thresholdVersion,
 	}
 	decision, err := dosebudget.Evaluate(projection.ProjectedTotalMSV, thresholds)
@@ -374,8 +411,10 @@ func (service *DoseBudgetAssessmentService) calculate(
 		PlanID: plan.ID, PlanCode: plan.PlanCode, PlanVersion: plan.Version,
 		PeriodStart: period.Start, PeriodEnd: period.End, EstimatedRateMSVH: plan.EstimatedRateMSVH,
 		PlannedMinutes: plan.PlannedMinutes, Controls: controls,
-		AdministrativeLimitMSV: worker.AdministrativeLimitMSV, LegalLimitMSV: worker.AnnualLimitMSV,
+		AdministrativeLimitMSV: administrativeLimit, LegalLimitMSV: worker.AnnualLimitMSV,
 		NearLegalRatio: service.nearRatio, ThresholdVersion: service.thresholdVersion,
+		LimitSource: limitSource, BaselineAdminLimitMSV: worker.AdministrativeLimitMSV,
+		LimitAdjustmentID: adjustmentID,
 	}
 	snapshotJSON, evidenceJSON, err := dosebudget.BuildArtifacts(snapshot, summary, decision)
 	if err != nil {

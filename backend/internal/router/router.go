@@ -20,6 +20,7 @@ type handlers struct {
 	plans       *handler.WorkPermitPlanHandler
 	exposures   *handler.ExposureEntryHandler
 	assessments *handler.DoseBudgetAssessmentHandler
+	adjustments *handler.TemporaryLimitAdjustmentHandler
 	auth        *service.AuthService
 }
 
@@ -41,6 +42,7 @@ func New(db *gorm.DB, cfg config.Config) *gin.Engine {
 	registerWorkPermitPlanRoutes(protected, wired.plans)
 	registerExposureEntryRoutes(protected, wired.exposures)
 	registerDoseBudgetAssessmentRoutes(protected, wired.assessments)
+	registerTemporaryLimitAdjustmentRoutes(protected, wired.adjustments)
 	protected.GET("/audit", middleware.RBAC(constants.RoleRPOReviewer, constants.RoleAdmin), wired.system.Audit)
 	engine.NoRoute(func(context *gin.Context) {
 		context.JSON(http.StatusNotFound, gin.H{
@@ -56,6 +58,7 @@ func wire(db *gorm.DB, cfg config.Config) handlers {
 	planRepository := repository.NewWorkPermitPlanRepository(db)
 	exposureRepository := repository.NewExposureEntryRepository(db)
 	assessmentRepository := repository.NewDoseBudgetAssessmentRepository(db)
+	adjustmentRepository := repository.NewTemporaryLimitAdjustmentRepository(db)
 	systemRepository := repository.NewSystemRepository(db)
 	auditService := service.NewAuditService(systemRepository)
 	authService := service.NewAuthService(systemRepository, cfg.JWTSecret, cfg.JWTTTL)
@@ -63,15 +66,17 @@ func wire(db *gorm.DB, cfg config.Config) handlers {
 	planService := service.NewWorkPermitPlanService(planRepository, workerRepository, assessmentRepository, auditService)
 	exposureService := service.NewExposureEntryService(db, exposureRepository, workerRepository, auditService)
 	assessmentService := service.NewDoseBudgetAssessmentService(
-		db, assessmentRepository, planRepository, workerRepository, exposureRepository, auditService,
+		db, assessmentRepository, planRepository, workerRepository, exposureRepository, adjustmentRepository, auditService,
 		cfg.Thresholds.NearLegalRatio, cfg.Thresholds.Version,
 	)
+	adjustmentService := service.NewTemporaryLimitAdjustmentService(db, adjustmentRepository, workerRepository, auditService)
 	return handlers{
 		system:      handler.NewSystemHandler(authService, auditService, db),
 		workers:     handler.NewWorkerProfileHandler(workerService),
 		plans:       handler.NewWorkPermitPlanHandler(planService),
 		exposures:   handler.NewExposureEntryHandler(exposureService),
 		assessments: handler.NewDoseBudgetAssessmentHandler(assessmentService),
+		adjustments: handler.NewTemporaryLimitAdjustmentHandler(adjustmentService),
 		auth:        authService,
 	}
 }

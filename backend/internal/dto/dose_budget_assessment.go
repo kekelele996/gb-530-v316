@@ -34,6 +34,10 @@ type DoseEvidence struct {
 	RequiresManualReview bool      `json:"requires_manual_review"`
 	EscalationReason     string    `json:"escalation_reason"`
 	BoundaryStatement    string    `json:"boundary_statement"`
+	LimitSource          string    `json:"limit_source"`
+	BaselineAdminLimit   float64   `json:"baseline_administrative_limit_msv"`
+	LimitAdjustmentID    uint      `json:"limit_adjustment_id,omitempty"`
+	LimitBasisNote       string    `json:"limit_basis_note"`
 }
 
 type DoseBudgetAssessmentResponse struct {

@@ -56,7 +56,7 @@ request "create threshold test worker" 201 POST "/workers" "$planner_token" '{"w
 worker_id="$(jq -r '.data.id' <<<"$last_body")"
 require_json '.data.remaining_legal_msv == 1' "new worker legal margin"
 
-occurred_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+occurred_at="$(date -u -d '1 minute ago' +'%Y-%m-%dT%H:%M:%SZ')"
 request "create pending exposure" 201 POST "/exposures" "$planner_token" "$(jq -nc --argjson worker "$worker_id" --arg at "$occurred_at" '{worker_id:$worker,source_ref:"QA-SRC-530",occurred_at:$at,dose_msv:0.4,note:"offline QA source"}')"
 exposure_id="$(jq -r '.data.id' <<<"$last_body")"
 require_json '.data.quality_flag == "pending"' "new exposure starts pending"
@@ -105,5 +105,56 @@ require_json '(.data | length) >= 8 and ([.data[].action] | index("assessment.re
 
 request "worker total reflects correction" 200 GET "/workers/$worker_id" "$admin_token"
 require_json '.data.period_dose_msv == 0.3' "period total uses original plus reversal plus replacement"
+
+# --- Temporary limit adjustments (maintenance windows) ---
+adj_effective="$(date -u -d 'yesterday' +'%Y-%m-%dT00:00:00Z')"
+adj_expiry="$(date -u -d 'tomorrow' +'%Y-%m-%dT00:00:00Z')"
+
+request "create adjustment assessment plan" 201 POST "/plans" "$planner_token" "$(jq -nc --argjson worker "$worker_id" '{plan_code:"QA-ALARA-530-ADJ",worker_id:$worker,work_area:"QA outage bay",task_category:"Maintenance survey",estimated_rate_msvh:0.5,planned_minutes:30,controls:["staging","time check"]}')"
+adj_plan_id="$(jq -r '.data.id' <<<"$last_body")"
+adj_plan_version="$(jq -r '.data.version' <<<"$last_body")"
+
+request "baseline assessment uses worker limit" 201 POST "/assessments" "$planner_token" "$(jq -nc --argjson plan "$adj_plan_id" --argjson version "$adj_plan_version" --arg end "$period_end" '{plan_id:$plan,period_end:$end,version:$version}')"
+adj_plan_version="$(jq -r '.data.plan_version' <<<"$last_body")"
+require_json '.data.risk_band == "above_admin" and .data.evidence.limit_source == "baseline_administrative" and .data.evidence.administrative_limit_msv == 0.5' "baseline limit and band without adjustment"
+
+request "RPO cannot request adjustment" 403 POST "/limit-adjustments" "$rpo_token" "$(jq -nc --argjson worker "$worker_id" --arg eff "$adj_effective" --arg exp "$adj_expiry" '{worker_id:$worker,effective_date:$eff,expiry_date:$exp,adjusted_limit_msv:0.8,reason:"RPO must not request"}')"
+
+request "adjustment above legal rejected" 400 POST "/limit-adjustments" "$planner_token" "$(jq -nc --argjson worker "$worker_id" --arg eff "$adj_effective" --arg exp "$adj_expiry" '{worker_id:$worker,effective_date:$eff,expiry_date:$exp,adjusted_limit_msv:1.2,reason:"exceeds legal planning limit"}')"
+require_json '.error.code == "adjustment_exceeds_legal_limit"' "legal ceiling enforced"
+
+request "planner requests adjustment" 201 POST "/limit-adjustments" "$planner_token" "$(jq -nc --argjson worker "$worker_id" --arg eff "$adj_effective" --arg exp "$adj_expiry" '{worker_id:$worker,effective_date:$eff,expiry_date:$exp,adjusted_limit_msv:0.8,reason:"outage maintenance raises administrative ceiling"}')"
+adjustment_id="$(jq -r '.data.id' <<<"$last_body")"
+require_json '.data.status == "pending"' "adjustment starts pending"
+
+request "pending adjustment not applied" 201 POST "/assessments" "$planner_token" "$(jq -nc --argjson plan "$adj_plan_id" --argjson version "$adj_plan_version" --arg end "$period_end" '{plan_id:$plan,period_end:$end,version:$version}')"
+adj_plan_version="$(jq -r '.data.plan_version' <<<"$last_body")"
+require_json '.data.risk_band == "above_admin" and .data.evidence.limit_source == "baseline_administrative"' "pending adjustment does not change the limit"
+
+request "overlapping pending window rejected" 409 POST "/limit-adjustments" "$planner_token" "$(jq -nc --argjson worker "$worker_id" --arg eff "$adj_effective" --arg exp "$adj_expiry" '{worker_id:$worker,effective_date:$eff,expiry_date:$exp,adjusted_limit_msv:0.7,reason:"duplicate window must fail"}')"
+require_json '.error.code == "limit_window_overlap"' "overlap conflict code"
+
+request "rejection requires reason" 400 POST "/limit-adjustments/$adjustment_id/review" "$rpo_token" '{"decision":"reject","rejection_reason":""}'
+require_json '.error.code == "rejection_reason_required"' "rejection reason is mandatory"
+
+request "RPO rejects adjustment" 200 POST "/limit-adjustments/$adjustment_id/review" "$rpo_token" '{"decision":"reject","rejection_reason":"Window overlaps a higher-priority outage; resubmit with justification."}'
+require_json '.data.status == "rejected" and (.data.rejection_reason | length) > 0' "rejection recorded with reason"
+
+request "resubmission after rejection allowed" 201 POST "/limit-adjustments" "$planner_token" "$(jq -nc --argjson worker "$worker_id" --arg eff "$adj_effective" --arg exp "$adj_expiry" '{worker_id:$worker,effective_date:$eff,expiry_date:$exp,adjusted_limit_msv:0.8,reason:"resubmitted with outage order reference"}')"
+adjustment_id="$(jq -r '.data.id' <<<"$last_body")"
+
+request "planner cannot review adjustment" 403 POST "/limit-adjustments/$adjustment_id/review" "$planner_token" '{"decision":"approve"}'
+
+request "RPO approves adjustment" 200 POST "/limit-adjustments/$adjustment_id/review" "$rpo_token" '{"decision":"approve"}'
+require_json '.data.status == "approved" and .data.reviewed_by > 0' "approval recorded"
+
+request "overlap with approved window rejected" 409 POST "/limit-adjustments" "$planner_token" "$(jq -nc --argjson worker "$worker_id" --arg eff "$adj_effective" --arg exp "$adj_expiry" '{worker_id:$worker,effective_date:$eff,expiry_date:$exp,adjusted_limit_msv:0.9,reason:"overlap with approved must fail"}')"
+require_json '.error.code == "limit_window_overlap"' "approved window blocks overlap"
+
+request "approved adjustment applied at period end" 201 POST "/assessments" "$planner_token" "$(jq -nc --argjson plan "$adj_plan_id" --argjson version "$adj_plan_version" --arg end "$period_end" '{plan_id:$plan,period_end:$end,version:$version}')"
+require_json ".data.risk_band == \"within_admin\" and .data.evidence.limit_source == \"approved_temporary_adjustment\" and .data.evidence.administrative_limit_msv == 0.8 and .data.evidence.baseline_administrative_limit_msv == 0.5 and .data.evidence.limit_adjustment_id == $adjustment_id" "approved window supplies the administrative limit"
+
+request "list adjustments for worker" 200 GET "/limit-adjustments?worker_id=$worker_id" "$admin_token"
+require_json "[.data[] | select(.id == $adjustment_id and .status == \"approved\")] | length == 1" "approved adjustment listed"
 
 printf 'ALL %d API CHECKS PASSED\n' "$checks"

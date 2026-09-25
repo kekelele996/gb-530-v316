@@ -31,6 +31,7 @@ import { DoseBandBadgeComponent } from './dose-band-badge.component';
         <p><strong>Evidence set</strong> {{ assessment.evidence.verified_entry_count }} verified · {{ assessment.evidence.excluded_entry_count }} excluded · {{ assessment.evidence.corrected_chain_count }} correction links</p>
         <p><strong>Formula</strong> {{ assessment.evidence.projection_formula }}</p>
         <p><strong>Threshold</strong> {{ assessment.threshold_version }} · near legal at {{ assessment.evidence.near_legal_ratio | percent:'1.0-0' }}</p>
+        <p class="limit-basis"><strong>Limit basis</strong> {{ assessment.evidence.limit_basis_note }}<span *ngIf="assessment.evidence.limit_adjustment_id"> (adjustment #{{ assessment.evidence.limit_adjustment_id }})</span></p>
         <p class="escalation"><strong>Review signal</strong> {{ assessment.evidence.escalation_reason }}</p>
       </div>
       <footer>{{ assessment.evidence.boundary_statement }}</footer>
@@ -51,6 +52,7 @@ import { DoseBandBadgeComponent } from './dose-band-badge.component';
     .facts { display: grid; gap: 8px; padding: 18px 20px; font-size: 12px; } .facts p { margin: 0; line-height: 1.45; }
     .facts strong { display: inline-block; min-width: 88px; color: var(--muted); }
     .escalation { color: #76510b; }
+    .limit-basis { color: #185847; }
     footer { padding: 11px 20px; background: #fff3c9; border-top: 1px solid #d8b75c; color: #493a13; font-size: 11px; }
     @media (max-width: 720px) { dl { grid-template-columns: 1fr 1fr; } dl div:nth-child(2) { border-right: 0; } .scale { grid-template-columns: 1fr 1fr; } }
   `],

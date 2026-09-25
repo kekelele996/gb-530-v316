@@ -9,6 +9,11 @@ import (
 
 const BoundaryStatement = "Offline ALARA planning result only. It is not a work permit, dosimeter reading, regulatory determination, or medical advice."
 
+const (
+	LimitSourceBaseline  = "baseline_administrative"
+	LimitSourceTemporary = "approved_temporary_adjustment"
+)
+
 type Snapshot struct {
 	WorkerID               uint      `json:"worker_id"`
 	WorkerCode             string    `json:"worker_code"`
@@ -27,6 +32,9 @@ type Snapshot struct {
 	LegalLimitMSV          float64   `json:"legal_limit_msv"`
 	NearLegalRatio         float64   `json:"near_legal_ratio"`
 	ThresholdVersion       string    `json:"threshold_version"`
+	LimitSource            string    `json:"limit_source"`
+	BaselineAdminLimitMSV  float64   `json:"baseline_administrative_limit_msv"`
+	LimitAdjustmentID      uint      `json:"limit_adjustment_id,omitempty"`
 }
 
 type Evidence struct {
@@ -44,6 +52,10 @@ type Evidence struct {
 	RequiresManualReview bool      `json:"requires_manual_review"`
 	EscalationReason     string    `json:"escalation_reason"`
 	BoundaryStatement    string    `json:"boundary_statement"`
+	LimitSource          string    `json:"limit_source"`
+	BaselineAdminLimit   float64   `json:"baseline_administrative_limit_msv"`
+	LimitAdjustmentID    uint      `json:"limit_adjustment_id,omitempty"`
+	LimitBasisNote       string    `json:"limit_basis_note"`
 }
 
 func BuildArtifacts(snapshot Snapshot, summary PeriodSummary, decision Decision) (string, string, error) {
@@ -61,6 +73,8 @@ func BuildArtifacts(snapshot Snapshot, summary PeriodSummary, decision Decision)
 		NearLegalRatio: snapshot.NearLegalRatio, ThresholdVersion: snapshot.ThresholdVersion,
 		RequiresManualReview: decision.RequiresManualReview, EscalationReason: decision.EscalationExplanation,
 		BoundaryStatement: BoundaryStatement,
+		LimitSource:       snapshot.LimitSource, BaselineAdminLimit: snapshot.BaselineAdminLimitMSV,
+		LimitAdjustmentID: snapshot.LimitAdjustmentID, LimitBasisNote: limitBasisNote(snapshot),
 	}
 	snapshotJSON, err := json.Marshal(snapshot)
 	if err != nil {
@@ -76,4 +90,13 @@ func BuildArtifacts(snapshot Snapshot, summary PeriodSummary, decision Decision)
 func RiskRank(value string) int {
 	ranks := map[string]int{"within_admin": 1, "above_admin": 2, "near_legal": 3, "above_legal": 4, "invalid": 5}
 	return ranks[value]
+}
+
+func limitBasisNote(snapshot Snapshot) string {
+	switch snapshot.LimitSource {
+	case LimitSourceTemporary:
+		return "Administrative limit uses the RPO-approved temporary adjustment covering the assessment period end; the baseline administrative limit remains unchanged."
+	default:
+		return "Administrative limit is the worker's baseline administrative limit; no approved temporary adjustment covers the assessment period end."
+	}
 }

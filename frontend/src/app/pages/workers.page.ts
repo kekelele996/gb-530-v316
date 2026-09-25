@@ -9,6 +9,7 @@ import { finalize } from 'rxjs';
 import { WorkersStore } from '../stores/workers.store';
 import { useAuth } from '../hooks/use-auth';
 import { SafetyBoundaryBannerComponent } from '../components/common/safety-boundary-banner.component';
+import { LimitAdjustmentsPanelComponent } from '../components/common/limit-adjustments-panel.component';
 import { apiErrorMessage } from '../utils/api-error';
 import { ProfileStatus, WorkerInput } from '../types/permit';
 
@@ -16,7 +17,7 @@ import { ProfileStatus, WorkerInput } from '../types/permit';
   standalone: true,
   imports: [
     CommonModule, ReactiveFormsModule, MatButtonModule, MatFormFieldModule, MatInputModule,
-    MatSelectModule, SafetyBoundaryBannerComponent,
+    MatSelectModule, SafetyBoundaryBannerComponent, LimitAdjustmentsPanelComponent,
   ],
   template: `
     <div class="page">
@@ -59,6 +60,7 @@ import { ProfileStatus, WorkerInput } from '../types/permit';
         </table>
         <div class="empty" *ngIf="!store.loading() && !store.workers().length">No worker profiles match the current planning set.</div>
       </div>
+      <app-limit-adjustments-panel />
     </div>
   `,
   styles: [`

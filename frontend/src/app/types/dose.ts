@@ -43,6 +43,10 @@ export interface DoseEvidence {
   requires_manual_review: boolean;
   escalation_reason: string;
   boundary_statement: string;
+  limit_source: string;
+  baseline_administrative_limit_msv: number;
+  limit_adjustment_id?: number;
+  limit_basis_note: string;
 }
 
 export interface DoseBudgetAssessment {
