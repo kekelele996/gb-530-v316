@@ -1,5 +1,30 @@
 export type ProfileStatus = 'active' | 'suspended' | 'archived';
 export type PermitStatus = 'draft' | 'assessed' | 'pending_rpo_review' | 'planning_accepted' | 'rejected' | 'archived';
+export type AdjustmentStatus = 'pending' | 'approved' | 'rejected';
+
+export interface LimitAdjustment {
+  id: number;
+  worker_id: number;
+  worker_code: string;
+  worker_name: string;
+  effective_from: string;
+  effective_to: string;
+  adjusted_limit_msv: number;
+  reason: string;
+  status: AdjustmentStatus;
+  reviewed_by?: number;
+  reviewed_at?: string;
+  review_note: string;
+  created_by: number;
+  created_at: string;
+}
+
+export interface LimitAdjustmentInput {
+  effective_from: string;
+  effective_to: string;
+  adjusted_limit_msv: number;
+  reason: string;
+}
 
 export interface WorkerProfile {
   id: number;

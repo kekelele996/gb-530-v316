@@ -80,13 +80,16 @@ plan_version="$(jq -r '.data.version' <<<"$last_body")"
 request "create comparison plan" 201 POST "/plans" "$planner_token" "$(jq -nc --argjson worker "$worker_id" '{plan_code:"QA-ALARA-530-LO",worker_id:$worker,work_area:"QA controlled bay",task_category:"Remote survey",estimated_rate_msvh:0.1,planned_minutes:30,controls:["distance markers","remote reading"]}')"
 comparison_plan_id="$(jq -r '.data.id' <<<"$last_body")"
 
+# The period is half-open [start, end); make sure period_end falls in a later
+# second than the exposure timestamps above even on fast machines.
+sleep 1
 period_end="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-request "calculate immutable assessment" 201 POST "/assessments" "$planner_token" "$(jq -nc --argjson plan "$plan_id" --argjson version "$plan_version" --arg end "$period_end" '{plan_id:$plan,period_end:$end,version:$version}')"
+request "calculate immutable assessment" 201 POST "/assessments" "$planner_token" "$(jq -nc --argjson plan "$plan_id" --argjson version "$plan_version" --arg pend "$period_end" '{plan_id:$plan,period_end:$pend,version:$version}')"
 assessment_id="$(jq -r '.data.id' <<<"$last_body")"
 assessed_version="$(jq -r '.data.plan_version' <<<"$last_body")"
 require_json '.data.period_dose_msv == 0.3 and .data.projected_dose_msv == 1.8 and .data.risk_band == "above_legal" and .data.evidence.requires_manual_review == true' "corrected total, projection and threshold escalation"
 
-request "compare two time-weighted scenarios" 200 POST "/assessments/compare" "$planner_token" "$(jq -nc --argjson first "$plan_id" --argjson second "$comparison_plan_id" --arg end "$period_end" '{plan_ids:[$first,$second],period_end:$end}')"
+request "compare two time-weighted scenarios" 200 POST "/assessments/compare" "$planner_token" "$(jq -nc --argjson first "$plan_id" --argjson second "$comparison_plan_id" --arg pend "$period_end" '{plan_ids:[$first,$second],period_end:$pend}')"
 require_json '.data.scenarios | length == 2' "two comparison scenarios"
 
 request "submit assessment to RPO" 200 POST "/assessments/$assessment_id/submit" "$planner_token" "$(jq -nc --argjson version "$assessed_version" '{version:$version}')"
@@ -105,5 +108,32 @@ require_json '(.data | length) >= 8 and ([.data[].action] | index("assessment.re
 
 request "worker total reflects correction" 200 GET "/workers/$worker_id" "$admin_token"
 require_json '.data.period_dose_msv == 0.3' "period total uses original plus reversal plus replacement"
+
+request "submit temporary limit adjustment" 201 POST "/workers/$worker_id/adjustments" "$planner_token" '{"effective_from":"2020-01-01T00:00:00Z","effective_to":"2099-01-01T00:00:00Z","adjusted_limit_msv":0.9,"reason":"QA outage maintenance window"}'
+adjustment_id="$(jq -r '.data.id' <<<"$last_body")"
+require_json '.data.status == "pending"' "adjustment starts pending RPO review"
+
+request "overlapping adjustment rejected" 409 POST "/workers/$worker_id/adjustments" "$planner_token" '{"effective_from":"2026-01-01T00:00:00Z","effective_to":"2026-02-01T00:00:00Z","adjusted_limit_msv":0.8,"reason":"overlapping window must fail"}'
+require_json '.error.code == "adjustment_overlap"' "overlapping pending or approved windows conflict"
+
+request "adjustment above legal rejected" 400 POST "/workers/$worker_id/adjustments" "$planner_token" '{"effective_from":"2027-01-01T00:00:00Z","effective_to":"2027-02-01T00:00:00Z","adjusted_limit_msv":1.5,"reason":"above legal must fail"}'
+require_json '.error.code == "limit_exceeds_legal"' "adjusted limit cannot exceed the regulatory limit"
+
+request "planner cannot review adjustment" 403 POST "/adjustments/$adjustment_id/review" "$planner_token" '{"decision":"approve"}'
+
+request "rejection requires reason" 400 POST "/adjustments/$adjustment_id/review" "$rpo_token" '{"decision":"reject","note":""}'
+require_json '.error.code == "review_note_required"' "rejection reason is mandatory"
+
+request "RPO approves adjustment" 200 POST "/adjustments/$adjustment_id/review" "$rpo_token" '{"decision":"approve","note":"QA outage window independently verified"}'
+require_json '.data.status == "approved"' "adjustment approved"
+
+request "assessment adopts approved adjustment" 201 POST "/assessments" "$planner_token" "$(jq -nc --argjson plan "$comparison_plan_id" --arg pend "$period_end" '{plan_id:$plan,period_end:$pend,version:1}')"
+require_json ".data.evidence.administrative_limit_msv == 0.9 and .data.evidence.base_administrative_limit_msv == 0.5 and .data.evidence.limit_adjustment.id == $adjustment_id and .data.remaining_admin_msv == 0.55" "approved adjustment governs the new assessment evidence"
+
+request "frozen assessment keeps original limit" 200 GET "/assessments/$assessment_id" "$admin_token"
+require_json '.data.evidence.administrative_limit_msv == 0.5 and (.data.evidence.limit_adjustment | not)' "existing assessment results are unchanged"
+
+request "worker adjustments listed" 200 GET "/workers/$worker_id/adjustments" "$admin_token"
+require_json '.data | length == 1 and .[0].status == "approved"' "worker page adjustment status"
 
 printf 'ALL %d API CHECKS PASSED\n' "$checks"

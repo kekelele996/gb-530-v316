@@ -44,6 +44,7 @@ docker compose down -v --remove-orphans
 ## 核心功能
 
 - 人员概况：维护人员编号、授权级别、行政控制值、法规规划限值、统计周期和乐观锁版本。
+- 临时限值调整：检修期间计划人员可为人员提交带生效/失效日期的行政限值临时调整；RPO 批准或驳回（驳回必填理由），待审或已批准的有效期不可重叠，调整后限值不得超过法规限值。
 - 暴露台账：新记录先进入 `pending`；RPO 核验后才能计入期间累计。
 - 不可变更正：原值禁止覆盖；一次更正事务创建负值 reversal 和新 replacement，完整保留链路。
 - 作业计划：使用统一 mSv/mSv/h 单位维护剂量率、分钟数和具体控制措施。
@@ -64,6 +65,8 @@ docker compose down -v --remove-orphans
 ```
 
 - 期间采用半开区间 `[period_start, period_end)`，边界有表驱动测试。
+- 调整有效期同样采用半开区间 `[effective_from, effective_to)`；预算评估按期间结束日期匹配已批准且覆盖该时刻的调整，未命中则继续使用人员原行政限值，已生成的评估结果保持不变。
+- 评估证据通过 `limit_adjustment`、`base_administrative_limit_msv` 与 `limit_adoption` 说明本次采用调整值还是原限值。
 - 仅 `quality_flag=verified` 的记录参与汇总；pending/rejected 会写入排除证据。
 - 更正链按原始值 + reversal + replacement 求和，链循环、跨人员关联和重复 `source_ref` 会被拒绝。
 - `near_legal` 默认从法规限值的 90% 开始；阈值版本默认 `ALARA-2026.1`。
@@ -120,6 +123,8 @@ docker compose down -v --remove-orphans
 | --- | --- | --- |
 | POST | `/auth/login` | 登录并签发 JWT |
 | GET/POST/PUT | `/workers[/:id]` | 人员列表、详情、创建和乐观锁更新 |
+| GET/POST | `/workers/:id/adjustments` | 人员临时限值调整列表与提交（planner） |
+| POST | `/adjustments/:id/review` | RPO 批准或驳回临时调整，驳回必填理由 |
 | GET/POST/PUT | `/plans[/:id]` | 计划列表、详情、创建和 draft 更新 |
 | POST | `/plans/:id/archive` | 归档已复核计划 |
 | GET/POST | `/exposures[/:id]` | 暴露列表、详情和 pending 记录创建 |
@@ -131,9 +136,19 @@ docker compose down -v --remove-orphans
 | POST | `/assessments/:id/review` | RPO 记录规划接受或拒绝 |
 | GET | `/audit` | RPO/admin 查询审计 |
 
-错误统一为 `error.code`、`error.message` 和 `request_id`。常见冲突包括 `duplicate_source_ref`、`correction_chain_conflict`、`invalid_state`、`version_conflict` 和 `forbidden`。
+错误统一为 `error.code`、`error.message` 和 `request_id`。常见冲突包括 `duplicate_source_ref`、`correction_chain_conflict`、`adjustment_overlap`、`limit_exceeds_legal`、`review_note_required`、`invalid_state`、`version_conflict` 和 `forbidden`。
 
 ## 枚举位置
+
+### AdjustmentStatus
+
+值：`pending | approved | rejected`。
+
+- 数据库/model：`backend/internal/model/limit_adjustment.go`
+- 后端常量/窗口算法：`backend/internal/constants/adjustment.go`、`backend/internal/dosebudget/adjustment.go`
+- 后端 DTO/repository/service/handler：`backend/internal/dto/limit_adjustment.go`、`backend/internal/repository/limit_adjustment.go`、`backend/internal/service/limit_adjustment.go`、`backend/internal/handler/limit_adjustment.go`
+- 评估采用：`backend/internal/service/dose_budget_assessment.go`、`backend/internal/dosebudget/evidence.go`
+- 前端类型/store/api/page：`frontend/src/app/types/permit.ts`、`stores/adjustments.store.ts`、`api/adjustments.api.ts`、`pages/workers.page.ts`、`components/common/budget-evidence-panel.component.ts`
 
 ### PermitStatus
 
@@ -197,7 +212,7 @@ npm --prefix frontend run build
 scripts/api_smoke.sh
 ```
 
-脚本会创建带低阈值的隔离测试人员，并验证重复来源、核验、更正链、投影、超阈值、比较、状态机、RBAC 和审计。
+脚本会创建带低阈值的隔离测试人员，并验证重复来源、核验、更正链、投影、超阈值、比较、状态机、临时限值调整审批与采用、RBAC 和审计。
 
 ## 安全与隐私边界
 

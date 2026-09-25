@@ -31,6 +31,7 @@ import { DoseBandBadgeComponent } from './dose-band-badge.component';
         <p><strong>Evidence set</strong> {{ assessment.evidence.verified_entry_count }} verified · {{ assessment.evidence.excluded_entry_count }} excluded · {{ assessment.evidence.corrected_chain_count }} correction links</p>
         <p><strong>Formula</strong> {{ assessment.evidence.projection_formula }}</p>
         <p><strong>Threshold</strong> {{ assessment.threshold_version }} · near legal at {{ assessment.evidence.near_legal_ratio | percent:'1.0-0' }}</p>
+        <p class="adoption" [class.adjusted]="assessment.evidence.limit_adjustment"><strong>Limit adoption</strong> {{ assessment.evidence.limit_adoption || 'Worker profile administrative limit applies.' }}<span *ngIf="assessment.evidence.limit_adjustment as adjustment" class="muted"> · window {{ adjustment.effective_from | date:'mediumDate':'UTC' }} – {{ adjustment.effective_to | date:'mediumDate':'UTC' }}</span></p>
         <p class="escalation"><strong>Review signal</strong> {{ assessment.evidence.escalation_reason }}</p>
       </div>
       <footer>{{ assessment.evidence.boundary_statement }}</footer>
@@ -50,6 +51,8 @@ import { DoseBandBadgeComponent } from './dose-band-badge.component';
     dt { color: var(--muted); font-size: 10px; text-transform: uppercase; } dd { margin: 5px 0 0; font-size: 17px; font-variant-numeric: tabular-nums; }
     .facts { display: grid; gap: 8px; padding: 18px 20px; font-size: 12px; } .facts p { margin: 0; line-height: 1.45; }
     .facts strong { display: inline-block; min-width: 88px; color: var(--muted); }
+    .adoption.adjusted { color: #185847; font-weight: 600; }
+    .adoption .muted { color: var(--muted); font-weight: 400; }
     .escalation { color: #76510b; }
     footer { padding: 11px 20px; background: #fff3c9; border-top: 1px solid #d8b75c; color: #493a13; font-size: 11px; }
     @media (max-width: 720px) { dl { grid-template-columns: 1fr 1fr; } dl div:nth-child(2) { border-right: 0; } .scale { grid-template-columns: 1fr 1fr; } }

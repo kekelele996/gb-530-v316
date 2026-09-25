@@ -37,6 +37,14 @@ export interface DoseEvidence {
   formula: string;
   projection_formula: string;
   administrative_limit_msv: number;
+  base_administrative_limit_msv: number;
+  limit_adjustment?: {
+    id: number;
+    effective_from: string;
+    effective_to: string;
+    adjusted_limit_msv: number;
+  } | null;
+  limit_adoption: string;
   annual_legal_limit_msv: number;
   near_legal_ratio: number;
   threshold_version: string;
